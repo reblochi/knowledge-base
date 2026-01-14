@@ -1,15 +1,18 @@
-import path from "path"
-import { fileURLToPath } from "url"
-import { promises, writeFileSync } from "fs"
 import { newStore, addTurtleToStore, storeToTurtle, sparqlInsertDelete } from "@foerderfunke/sem-ops-utils"
+import { promises, writeFileSync, createWriteStream } from "fs"
+import { fileURLToPath } from "url"
+import { ZipFile } from "yazl"
+import path from "path"
 
 const ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)))
 await promises.mkdir(`${ROOT}/build`, { recursive: true })
 
+const dfDir = path.join(ROOT, "datafields")
+const shaclDir = path.join(ROOT, "shacl")
+
 // ----------- def.built.ttl -----------
 
 let header = ["# This file is a generated enriched merge of the following source files:"]
-const dfDir = path.join(ROOT, "datafields")
 
 const defTurtleFiles = [
     `${ROOT}/definitions.ttl`,
@@ -51,9 +54,9 @@ console.log(`Wrote to ${target}`)
 
 header = ["# This file is a generated merge of the following source files:"]
 const shaclDirs = [
-    `${ROOT}/shacl`,
-    `${ROOT}/shacl/beta`,
-    `${ROOT}/shacl/bielefeld`
+    `${shaclDir}`,
+    `${shaclDir}/beta`,
+    `${shaclDir}/bielefeld`
 ]
 let shaclFiles = []
 for (let shaclDir of shaclDirs) {
@@ -70,3 +73,46 @@ turtle = header.join("\n") + "\n\n" + await storeToTurtle(rpsStore)
 target = `${ROOT}/build/rps.built.ttl`
 writeFileSync(target, turtle, "utf8")
 console.log(`Wrote to ${target}`)
+
+// ----------- foerderfunke-knowledge-base.zip -----------
+
+const zipOutput = `${ROOT}/build/foerderfunke-knowledge-base.zip`
+
+const defFiles = [
+    `${ROOT}/definitions.ttl`,
+    `${ROOT}/materialization.ttl`,
+    `${ROOT}/consistency.ttl`
+]
+
+async function addDirToZip(zip, dir, zipBasePath = "") {
+    const entries = await promises.readdir(dir, { withFileTypes: true })
+    for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name)
+        const zipPath = path.join(zipBasePath, entry.name)
+        if (entry.isDirectory()) {
+            await addDirToZip(zip, fullPath, zipPath)
+        } else if (entry.isFile()) {
+            zip.addFile(fullPath, zipPath)
+        }
+    }
+}
+
+const zip = new ZipFile()
+
+const infoTxt = `This ZIP file contains all the semantic definitions from the FörderFunke knowledge-base.\nCreated: ${new Date().toISOString()}`
+zip.addBuffer(Buffer.from(infoTxt, "utf8"), "info.txt")
+
+await addDirToZip(zip, dfDir, "datafields")
+await addDirToZip(zip, shaclDir, "shacl")
+for (const file of defFiles) zip.addFile(file, path.basename(file))
+
+zip.end()
+
+await new Promise((resolve, reject) => {
+    zip.outputStream
+        .pipe(createWriteStream(zipOutput))
+        .on("close", resolve)
+        .on("error", reject)
+})
+
+console.log(`Wrote to ${zipOutput}`)
